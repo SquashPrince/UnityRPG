@@ -1,0 +1,284 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using Holoville.HOTween;
+
+public class GoblinScript : MonoBehaviour
+{
+    public enum GoblinState { None, Idle, Patrol, Wait, MoveToTarget, Attack, Damage, Die }
+
+    [Header("기본속성")]
+    public GoblinState goblinState = GoblinState.None;
+
+    public float moveSpeed = 1.0f;
+    public GameObject Target = null;
+    public Transform targetTR = null;
+    public Vector3 targetPos = Vector3.zero;
+
+    private Animation myAni = null;
+    private Transform myTR = null;
+
+    [Header("애니메이션 클립")]
+    public AnimationClip IdleClip = null;
+    public AnimationClip MoveClip = null;
+    public AnimationClip AttackClip = null;
+    public AnimationClip DamageClip = null;
+    public AnimationClip DieClip = null;
+
+    [Header("전투 속성")]
+    public int HP = 100;
+    public float AttackRange = 1.5f;
+    public GameObject DamageEffect = null;
+    public GameObject DieEffect = null;
+    private Tweener effectTweener = null;
+    private SkinnedMeshRenderer skinMeshRenderer = null;
+
+    void Start()
+    {
+        // 대기를 기본상태로
+        goblinState = GoblinState.Idle;
+        // 캐싱
+        myAni = GetComponent<Animation>();
+        myTR = GetComponent<Transform>();
+        // 애니메이션 클립들 기본세팅
+        myAni[IdleClip.name].wrapMode = WrapMode.Loop;
+        myAni[MoveClip.name].wrapMode = WrapMode.Loop;
+        myAni[AttackClip.name].wrapMode = WrapMode.Once;
+        myAni[DamageClip.name].wrapMode = WrapMode.Once;
+        myAni[DamageClip.name].layer = 10;
+        myAni[DieClip.name].wrapMode = WrapMode.Once;
+        myAni[DieClip.name].layer = 10;
+        // 애니메이션 이벤트 추가
+        AddAnimationEvent(AttackClip, "OnAttackFinished");
+        AddAnimationEvent(DamageClip, "OnDamageFinished");
+        AddAnimationEvent(DieClip, "OnDieAniFinished");
+        // 스킨 메쉬 캐싱
+        skinMeshRenderer = myTR.Find("body").GetComponent<SkinnedMeshRenderer>();
+    }
+
+    /// <summary>
+    /// 고블린의 상태에 따라 동작을 제어하는 함수
+    /// </summary>
+    void CheckState()
+    {
+        switch (goblinState)
+        {
+            case GoblinState.Idle:
+                IdleUpdate(); // Idle -> MoveToTarget or Patrol
+                break;
+            case GoblinState.MoveToTarget:
+            case GoblinState.Patrol:
+                MoveUpdate(); // Move -> Wait or Attack
+                break;
+            case GoblinState.Attack:
+                AttackUpdate(); // Attack -> Die or Damage
+                break;
+        }
+    }
+    // Idle 상태일때의 동작
+    void IdleUpdate()
+    {
+        // 만약 타켓이 없다면, 임의의 지점을 랜덤하게 선택후
+        // 래이캐스트를 이용하여 임의의 지점의 높이값을 구해 그 지점으로 이동하게 한다.
+        if (Target == null)
+        {
+            targetPos = new Vector3(myTR.position.x + Random.Range(-10.0f, 10.0f), myTR.position.y + 1000.0f, myTR.position.z + Random.Range(-10.0f, 10.0f));
+
+            Ray ray = new Ray(targetPos, Vector3.down);
+            RaycastHit raycastHit = new RaycastHit();
+            if (Physics.Raycast(ray, out raycastHit, Mathf.Infinity) == true)
+            {   // 임의의 지점의 높이값
+                targetPos.y = raycastHit.point.y;
+            }
+            // 상태를 정찰 상태로 변경
+            goblinState = GoblinState.Patrol;
+        }
+        else
+        {   // 타겟이 있다면, 타겟으로 이동
+            goblinState = GoblinState.MoveToTarget;
+        }
+    }
+    // Move상태일때의 동장. MoveToTarget, Patrol
+    void MoveUpdate()
+    {
+        Vector3 diff = Vector3.zero;
+        Vector3 LookAtPos = Vector3.zero;
+
+        switch (goblinState)
+        {
+            case GoblinState.Patrol:
+                if (targetPos != Vector3.zero)
+                {
+                    diff = targetPos - myTR.position;
+                    // 목표지점까지 거의 도착했을떄
+                    if (diff.magnitude < AttackRange)
+                    {
+                        StartCoroutine(WaitUpdate());
+                        return;
+                    }
+
+                    LookAtPos = new Vector3(targetPos.x, myTR.position.y, targetPos.z);
+                }
+                break;
+            case GoblinState.MoveToTarget:
+                if (Target != null)
+                {
+                    diff = Target.transform.position - myTR.position;
+                    // 타겟과 충분히 가까워 졌다면
+                    if (diff.magnitude < AttackRange)
+                    {   // 공격상태로 변경
+                        goblinState = GoblinState.Attack;
+                        return;
+                    }
+
+                    LookAtPos = new Vector3(Target.transform.position.x, myTR.position.y, Target.transform.position.z);
+                }
+                break;
+        }
+
+        Vector3 direction = diff.normalized;
+        direction = new Vector3(direction.x, 0.0f, direction.z);
+        Vector3 moveAmount = direction * moveSpeed * Time.deltaTime;
+        myTR.Translate(moveAmount, Space.World);
+
+        myTR.LookAt(LookAtPos);
+    }
+    /// <summary>
+    /// 대기 동작
+    /// </summary>
+    /// <returns></returns>
+    IEnumerator WaitUpdate()
+    {
+        goblinState = GoblinState.Wait;
+        float waitTIme = Random.Range(1.0f, 3.0f);
+        yield return new WaitForSeconds(waitTIme);
+        goblinState = GoblinState.Idle;
+    }
+
+    void AnimationControl()
+    {
+        switch (goblinState)
+        {   // 대기하거나 이동할때
+            case GoblinState.Wait:
+            case GoblinState.Idle:
+                myAni.CrossFade(IdleClip.name);
+                break;
+                // 이동중일때
+            case GoblinState.Patrol:
+            case GoblinState.MoveToTarget:
+                myAni.CrossFade(MoveClip.name);
+                break;
+                // 공격할때
+            case GoblinState.Attack:
+                myAni.CrossFade(AttackClip.name);
+                break;
+                // 죽었을때
+            case GoblinState.Die:
+                myAni.CrossFade(DieClip.name);
+                break;
+        }
+    }
+    /// <summary>
+    /// 인지범위안에 다른 트리거나 플레이어가 들어왔다면 호출
+    /// </summary>
+    /// <param name="target"></param>
+    void OnSetTarget(GameObject target)
+    {
+        Target = target;
+        targetTR = Target.transform;
+        // 타겟을 향해 이동하는 상태로 변경
+        goblinState = GoblinState.MoveToTarget;
+    }
+
+    /// <summary>
+    /// 공격상태일때
+    /// </summary>
+    void AttackUpdate()
+    {
+        float distance = Vector3.Distance(targetTR.position, myTR.position);
+        if(distance > AttackRange + 0.5f)
+        {   // 타겟과의 거리가 멀어지면 타겟을 향해 이동
+            goblinState = GoblinState.MoveToTarget;
+        }
+    }
+    /// <summary>
+    /// 충돌 검출
+    /// </summary>
+    /// <param name="other"></param>
+    private void OnTriggerEnter(Collider other)
+    {   // 플레이어의 공격에 맞았다면
+        if(other.gameObject.CompareTag("PlayerAttack") == true)
+        {
+            HP -= 10;
+            if(HP > 0)
+            {
+                // 피격이펙트 생성
+                // Instantiate(DamageEffect, other.transform.position, Quaternion.identity);
+                // 피격 애니메이션 재생
+                myAni.CrossFade(DamageClip.name);
+                // 피격 트위닝 이펙트
+                DamageTweenEffect();
+            }
+            else
+            {
+                goblinState = GoblinState.Die;
+            }
+        }
+    }
+
+    void DamageTweenEffect()
+    {
+        // 트윈이 재생중이면 중복 트위닝을 하지 않는다
+        if(effectTweener  != null && effectTweener.isComplete == false)
+        {
+            return;
+        }
+        Color colorTo = Color.red;
+        effectTweener = HOTween.To(skinMeshRenderer.material, 0.2f, new TweenParms().Prop("color", colorTo).Loops(1, LoopType.Yoyo).OnStepComplete(OnDamageTweenFinished));
+    }
+
+    void OnDamageTweenFinished()
+    {
+        skinMeshRenderer.material.color = Color.white;
+    }
+
+    void Update()
+    {
+        CheckState();
+
+        AnimationControl();
+    }
+    // 애니메이션 재생이 끝났을떄 호출될 이벤트 함수들
+    void OnAttackFinished()
+    {
+        Debug.Log("공격 애니메이션 종료");
+
+    }
+
+    void OnDamageFinished()
+    {
+        Debug.Log("대미지 애니메이션 종료");
+
+    }
+
+    void OnDieAniFinished()
+    {
+        Debug.Log("사망 애니메이션 종료");
+        // 사망 이펙트 생성
+        //Instantiate(DieEffect, myTR.position, Quaternion.identity);
+        // 몬스터 삭제
+        Destroy(gameObject);
+    }
+    /// <summary>
+    /// 애니메이션을 추가해주는 함수
+    /// </summary>
+    /// <param name="clip"></param>
+    /// <param name="funcName"></param>
+    void AddAnimationEvent(AnimationClip clip, string funcName)
+    {
+        AnimationEvent newEvent = new AnimationEvent();
+        newEvent.functionName = funcName;
+        newEvent.time = clip.length - 0.1f;
+        clip.AddEvent(newEvent);
+    }
+}
